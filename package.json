@@ -1,0 +1,12 @@
+{
+  "name": "Чай-Прин",
+  "version": "1.0.0",
+  "description": "продажа чая блек раша",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "vk-io": "^4.8.0"
+  }
+}
