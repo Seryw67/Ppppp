@@ -40,7 +40,6 @@ const setUserStepStmt = db.prepare('UPDATE users SET step = ? WHERE id = ?');
 function registerUser(userId) {
     let user = getUserStmt.get(userId);
     if (!user) {
-        // Если заходит OWNER_ID, выдаем админку сразу
         const initialAdmin = (userId === OWNER_ID) ? 1 : 0;
         createUserStmt.run(userId, Math.floor(Date.now() / 1000), initialAdmin);
         user = getUserStmt.get(userId);
@@ -52,7 +51,6 @@ function registerUser(userId) {
 function getMainMenuKeyboard(isAdmin) {
     const builder = Keyboard.builder();
 
-    // Первый ряд: доступен всем
     builder.textButton({
         label: '🍵 Купить чай',
         payload: { command: 'buy_tea' },
@@ -61,9 +59,8 @@ function getMainMenuKeyboard(isAdmin) {
         label: '⭐ Купить подписку',
         payload: { command: 'buy_sub' },
         color: Keyboard.PRIMARY_COLOR
-    }).row(); // Переход на второй ряд
+    }).row();
 
-    // Второй ряд: в зависимости от прав
     if (isAdmin) {
         builder.textButton({
             label: '👑 Панель',
@@ -96,7 +93,6 @@ vk.updates.on('message_new', async (context) => {
 
     const user = registerUser(userId);
 
-    // Достаем текст из сообщения или из Payload кнопки
     let rawText = context.text || '';
     if (context.messagePayload && context.messagePayload.command) {
         rawText = context.messagePayload.command;
@@ -108,10 +104,9 @@ vk.updates.on('message_new', async (context) => {
     const args = text.split(/\s+/);
     const command = args[0] ? args[0].toLowerCase() : '';
 
-    // Флаг администратора
     const isAdmin = (userId === OWNER_ID || user.is_admin === 1);
 
-    // Команда Начать / Start / Помощь
+    // Старт / Помощь
     if (command === 'начать' || command === 'start' || command === '/start' || command === 'помощь') {
         setUserStepStmt.run('', userId);
         setAwaitingPinStmt.run(0, userId);
@@ -127,7 +122,7 @@ vk.updates.on('message_new', async (context) => {
         });
     }
 
-    // 1. ПРОВЕРКА ВВОДА ПИН-КОДА
+    // 1. ВВОД ПИН-КОДА
     if (user.awaiting_pin === 1) {
         if (text === ADMIN_PIN) {
             setAdminStatusStmt.run(1, userId);
@@ -147,7 +142,7 @@ vk.updates.on('message_new', async (context) => {
         }
     }
 
-    // 2. ВХОД И ВЫХОД ИЗ АДМИНКИ
+    // 2. ВХОД И ВЫХОД
     if (command === 'вход' || command === '🔑 вход в айди') {
         if (isAdmin) {
             return context.send({
@@ -177,7 +172,7 @@ vk.updates.on('message_new', async (context) => {
         });
     }
 
-    // 3. ПОКУПКА ЧАЯ И ПОДПИСКИ
+    // 3. ПОКУПКИ
     if (command === 'buy_tea') {
         setUserStepStmt.run('awaiting_buy_tea_amount', userId);
         return context.send('Сколько вы хотите купить чая? (Введите число от 1 до 150)');
@@ -188,7 +183,6 @@ vk.updates.on('message_new', async (context) => {
         return context.send('На сколько дней вы хотите купить подписку?');
     }
 
-    // Обработка ввода количества чая
     if (user.step === 'awaiting_buy_tea_amount') {
         const amount = parseInt(text, 10);
         if (isNaN(amount) || amount < 1 || amount > 150) {
@@ -214,7 +208,6 @@ vk.updates.on('message_new', async (context) => {
         return;
     }
 
-    // Обработка ввода дней подписки
     if (user.step === 'awaiting_sub_days') {
         const days = parseInt(text, 10);
         if (isNaN(days) || days <= 0) {
@@ -240,54 +233,25 @@ vk.updates.on('message_new', async (context) => {
         return;
     }
 
-    // 4. КОМАНДЫ АДМИНИСТРАТОРА
-
-    // Панель администратора
-    if (command === 'апанель' || command === '👑 панель' || command === 'панель') {
-        if (!isAdmin) {
-            return context.send({
-                message: '❌ У вас нет прав доступа.',
-                keyboard: getMainMenuKeyboard(false)
-            });
-        }
-
-        return context.send({
-            message: `👑 Панель Администратора\n\n` +
-                     `• Астата — статистика пользователей\n` +
-                     `• Сказать [ID] [Текст] или Ответ на сообщение — переслать сообщение юзеру\n` +
-                     `• Рассылка [Текст] — сделать рассылку всем\n` +
-                     `• Сервер — техническое состояние\n` +
-                     `• Выход — выйти из админки`,
-            keyboard: getMainMenuKeyboard(true)
-        });
-    }
-
-    // Статистика
-    if (command === 'астата' || command === 'стата') {
-        if (!isAdmin) return;
-        const count = getUsersCountStmt.get().count;
-        return context.send(`📊 Зарегистрировано пользователей в базе: ${count}`);
-    }
-
-    // Отправка сообщения пользователю (через Ответ/Reply или по ID)
-    if (command === 'сказать' || command === 'ответить' || (isAdmin && context.hasReplyMessage)) {
+    // 4. ОТПРАВКА СООБЩЕНИЯ ПОЛЬЗОВАТЕЛЮ (КОМАНДА "Отв [текст]" ЧЕРЕЗ REPLY ИЛИ ПО ID)
+    if (command === 'отв' || (isAdmin && context.hasReplyMessage)) {
         if (!isAdmin) return;
 
         let targetId = null;
         let messageText = '';
 
-        // ВАРИАНТ 1: Если админ ответил на пересланное сообщение
+        // Вариант 1: Через Reply (цитирование)
         if (context.hasReplyMessage) {
             targetId = context.replyMessage.senderId;
 
-            if (command === 'сказать' || command === 'ответить') {
+            if (command === 'отв') {
                 messageText = args.slice(1).join(' ');
             } else {
                 messageText = rawText;
             }
         } 
-        // ВАРИАНТ 2: Старая команда "сказать [ID] [Текст]"
-        else if (command === 'сказать' || command === 'ответить') {
+        // Вариант 2: "отв [ID] [Текст]" (без reply)
+        else if (command === 'отв') {
             targetId = parseInt(args[1], 10);
             messageText = args.slice(2).join(' ');
         }
@@ -297,7 +261,7 @@ vk.updates.on('message_new', async (context) => {
         }
 
         if (!messageText.trim()) {
-            return context.send('⚠️ Введите текст сообщения для отправки.');
+            return context.send('⚠️ Введите текст сообщения для отправки. Пример: `Отв Ваш заказ готовит администрация`');
         }
 
         try {
@@ -313,7 +277,34 @@ vk.updates.on('message_new', async (context) => {
         }
     }
 
-    // Рассылка
+    // 5. КОМАНДЫ АДМИНИСТРАТОРА
+
+    if (command === 'апанель' || command === '👑 панель' || command === 'панель') {
+        if (!isAdmin) {
+            return context.send({
+                message: '❌ У вас нет прав доступа.',
+                keyboard: getMainMenuKeyboard(false)
+            });
+        }
+
+        return context.send({
+            message: `👑 Панель Администратора\n\n` +
+                     `• Астата — статистика пользователей\n` +
+                     `• Отв [Текст] (в ответ на сообщение) — отправить сообщение пользователю\n` +
+                     `• Отв [ID] [Текст] — отправить сообщение по ID\n` +
+                     `• Рассылка [Текст] — сделать рассылку всем\n` +
+                     `• Сервер — техническое состояние\n` +
+                     `• Выход — выйти из админки`,
+            keyboard: getMainMenuKeyboard(true)
+        });
+    }
+
+    if (command === 'астата' || command === 'стата') {
+        if (!isAdmin) return;
+        const count = getUsersCountStmt.get().count;
+        return context.send(`📊 Зарегистрировано пользователей в базе: ${count}`);
+    }
+
     if (command === 'рассылка') {
         if (!isAdmin) return;
         const broadcastText = args.slice(1).join(' ');
@@ -344,7 +335,6 @@ vk.updates.on('message_new', async (context) => {
         return context.send(`✅ Рассылка завершена!\nУспешно: ${success}\nОшибок: ${failed}`);
     }
 
-    // Инфо о сервере
     if (command === 'сервер') {
         if (!isAdmin) return;
         const mem = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2);
