@@ -10,7 +10,7 @@ const ADMIN_PIN = '5480';     // ПИН для входа
 const TEA_PRICE = 1400;       // Цена за 1 пакетик чая
 
 if (!VK_TOKEN) {
-    console.error('Ошибка: Переменная VK_TOKEN не найдена!');
+    console.error('Ошибка: Переменная VK_TOKEN не найдена в окружении!');
     process.exit(1);
 }
 
@@ -61,7 +61,7 @@ function getMainMenuKeyboard(isAdmin) {
         label: '⭐ Купить подписку',
         payload: { command: 'buy_sub' },
         color: Keyboard.PRIMARY_COLOR
-    }).row(); // Обязательный переход на 2-й ряд
+    }).row(); // Переход на второй ряд
 
     // Второй ряд: в зависимости от прав
     if (isAdmin) {
@@ -96,29 +96,29 @@ vk.updates.on('message_new', async (context) => {
 
     const user = registerUser(userId);
 
-    // Достаем текст из обычного сообщения или из Payload кнопки
+    // Достаем текст из сообщения или из Payload кнопки
     let rawText = context.text || '';
     if (context.messagePayload && context.messagePayload.command) {
         rawText = context.messagePayload.command;
     }
 
-    if (!rawText.trim()) return;
+    if (!rawText.trim() && !context.hasReplyMessage) return;
 
     const text = rawText.trim();
     const args = text.split(/\s+/);
-    const command = args[0].toLowerCase();
-    
+    const command = args[0] ? args[0].toLowerCase() : '';
+
     // Флаг администратора
     const isAdmin = (userId === OWNER_ID || user.is_admin === 1);
 
-    // Команда Начать / Start / Сброс
+    // Команда Начать / Start / Помощь
     if (command === 'начать' || command === 'start' || command === '/start' || command === 'помощь') {
         setUserStepStmt.run('', userId);
         setAwaitingPinStmt.run(0, userId);
 
-        let msg = `👋 Привет! Выберите действие ниже:`;
+        let msg = '👋 Привет! Выберите действие ниже:';
         if (isAdmin) {
-            msg += `\n\n👑 Вы авторизованы как Администратор!`;
+            msg += '\n\n👑 Вы авторизованы как Администратор!';
         }
 
         return context.send({
@@ -157,7 +157,7 @@ vk.updates.on('message_new', async (context) => {
         }
 
         setAwaitingPinStmt.run(1, userId);
-        return context.send('🔑 Введите ПИН-код для доступа к панеле:');
+        return context.send('🔑 Введите ПИН-код для доступа к панели:');
     }
 
     if (command === 'выход' || command === '🚪 выйти') {
@@ -241,6 +241,8 @@ vk.updates.on('message_new', async (context) => {
     }
 
     // 4. КОМАНДЫ АДМИНИСТРАТОРА
+
+    // Панель администратора
     if (command === 'апанель' || command === '👑 панель' || command === 'панель') {
         if (!isAdmin) {
             return context.send({
@@ -252,7 +254,7 @@ vk.updates.on('message_new', async (context) => {
         return context.send({
             message: `👑 Панель Администратора\n\n` +
                      `• Астата — статистика пользователей\n` +
-                     `• Сказать [ID] [Текст] — отправить сообщение юзеру\n` +
+                     `• Сказать [ID] [Текст] или Ответ на сообщение — переслать сообщение юзеру\n` +
                      `• Рассылка [Текст] — сделать рассылку всем\n` +
                      `• Сервер — техническое состояние\n` +
                      `• Выход — выйти из админки`,
@@ -260,33 +262,58 @@ vk.updates.on('message_new', async (context) => {
         });
     }
 
+    // Статистика
     if (command === 'астата' || command === 'стата') {
         if (!isAdmin) return;
         const count = getUsersCountStmt.get().count;
         return context.send(`📊 Зарегистрировано пользователей в базе: ${count}`);
     }
 
-    if (command === 'сказать' || command === 'ответить') {
+    // Отправка сообщения пользователю (через Ответ/Reply или по ID)
+    if (command === 'сказать' || command === 'ответить' || (isAdmin && context.hasReplyMessage)) {
         if (!isAdmin) return;
-        const targetId = parseInt(args[1]);
-        const messageText = args.slice(2).join(' ');
 
-        if (!targetId || !messageText) {
-            return context.send('⚠️ Использование: Сказать [VK ID] [Текст]');
+        let targetId = null;
+        let messageText = '';
+
+        // ВАРИАНТ 1: Если админ ответил на пересланное сообщение
+        if (context.hasReplyMessage) {
+            targetId = context.replyMessage.senderId;
+
+            if (command === 'сказать' || command === 'ответить') {
+                messageText = args.slice(1).join(' ');
+            } else {
+                messageText = rawText;
+            }
+        } 
+        // ВАРИАНТ 2: Старая команда "сказать [ID] [Текст]"
+        else if (command === 'сказать' || command === 'ответить') {
+            targetId = parseInt(args[1], 10);
+            messageText = args.slice(2).join(' ');
+        }
+
+        if (!targetId || targetId < 0) {
+            return context.send('⚠️ Не удалось определить ID получателя.');
+        }
+
+        if (!messageText.trim()) {
+            return context.send('⚠️ Введите текст сообщения для отправки.');
         }
 
         try {
             await vk.api.messages.send({
                 user_id: targetId,
-                message: messageText,
+                message: `💬 Сообщение от администрации:\n\n${messageText}`,
                 random_id: Math.floor(Math.random() * 1000000000)
             });
-            return context.send(`✅ Сообщение отправлено пользователю id${targetId}`);
+
+            return context.send(`✅ Ответ успешно отправлен пользователю vk.com/id${targetId}`);
         } catch (error) {
             return context.send(`❌ Ошибка отправки: ${error.message}`);
         }
     }
 
+    // Рассылка
     if (command === 'рассылка') {
         if (!isAdmin) return;
         const broadcastText = args.slice(1).join(' ');
@@ -317,6 +344,7 @@ vk.updates.on('message_new', async (context) => {
         return context.send(`✅ Рассылка завершена!\nУспешно: ${success}\nОшибок: ${failed}`);
     }
 
+    // Инфо о сервере
     if (command === 'сервер') {
         if (!isAdmin) return;
         const mem = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2);
