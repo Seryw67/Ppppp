@@ -7,6 +7,7 @@
     "start": "node index.js"
   },
   "dependencies": {
+    "better-sqlite3": "^11.0.0",
     "vk-io": "^4.8.0"
   }
 }
