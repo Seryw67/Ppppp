@@ -7,7 +7,7 @@ const Database = require('better-sqlite3');
 const VK_TOKEN = process.env.VK_TOKEN;
 const OWNER_ID = 1021072434; // Твой VK ID
 const ADMIN_PIN = '5480';     // ПИН для входа
-const TEA_PRICE = 1400;       // Цена чая
+const TEA_PRICE = 1400;       // Цена за 1 пакетик чая
 
 if (!VK_TOKEN) {
     console.error('Ошибка: Переменная VK_TOKEN не найдена!');
@@ -40,7 +40,9 @@ const setUserStepStmt = db.prepare('UPDATE users SET step = ? WHERE id = ?');
 function registerUser(userId) {
     let user = getUserStmt.get(userId);
     if (!user) {
-        createUserStmt.run(userId, Math.floor(Date.now() / 1000), 0);
+        // Если заходит OWNER_ID, выдаем админку сразу
+        const initialAdmin = (userId === OWNER_ID) ? 1 : 0;
+        createUserStmt.run(userId, Math.floor(Date.now() / 1000), initialAdmin);
         user = getUserStmt.get(userId);
     }
     return user;
@@ -50,7 +52,7 @@ function registerUser(userId) {
 function getMainMenuKeyboard(isAdmin) {
     const builder = Keyboard.builder();
 
-    // Первый ряд — доступен всем
+    // Первый ряд: доступен всем
     builder.textButton({
         label: '🍵 Купить чай',
         payload: { command: 'buy_tea' },
@@ -59,16 +61,16 @@ function getMainMenuKeyboard(isAdmin) {
         label: '⭐ Купить подписку',
         payload: { command: 'buy_sub' },
         color: Keyboard.PRIMARY_COLOR
-    }).row();
+    }).row(); // Обязательный переход на 2-й ряд
 
-    // Второй ряд — зависит от прав
+    // Второй ряд: в зависимости от прав
     if (isAdmin) {
         builder.textButton({
-            label: '👑 Панель администратора',
+            label: '👑 Панель',
             payload: { command: 'апанель' },
             color: Keyboard.POSITIVE_COLOR
-        }).row().textButton({
-            label: '🚪 Выйти из админки',
+        }).textButton({
+            label: '🚪 Выйти',
             payload: { command: 'выход' },
             color: Keyboard.NEGATIVE_COLOR
         });
@@ -94,7 +96,7 @@ vk.updates.on('message_new', async (context) => {
 
     const user = registerUser(userId);
 
-    // Считываем текст из сообщения или из нажатой кнопки (payload)
+    // Достаем текст из обычного сообщения или из Payload кнопки
     let rawText = context.text || '';
     if (context.messagePayload && context.messagePayload.command) {
         rawText = context.messagePayload.command;
@@ -106,10 +108,10 @@ vk.updates.on('message_new', async (context) => {
     const args = text.split(/\s+/);
     const command = args[0].toLowerCase();
     
-    // Админ — это Либо Владелец по ID, либо авторизованный по ПИН-коду
+    // Флаг администратора
     const isAdmin = (userId === OWNER_ID || user.is_admin === 1);
 
-    // Сброс и старт
+    // Команда Начать / Start / Сброс
     if (command === 'начать' || command === 'start' || command === '/start' || command === 'помощь') {
         setUserStepStmt.run('', userId);
         setAwaitingPinStmt.run(0, userId);
@@ -155,10 +157,17 @@ vk.updates.on('message_new', async (context) => {
         }
 
         setAwaitingPinStmt.run(1, userId);
-        return context.send('🔑 Введите ПИН-код для доступа к админ-панели:');
+        return context.send('🔑 Введите ПИН-код для доступа к панеле:');
     }
 
-    if (command === 'выход' || command === '🚪 выйти из админки') {
+    if (command === 'выход' || command === '🚪 выйти') {
+        if (userId === OWNER_ID) {
+            return context.send({
+                message: '⚠️ Создатель бота не может выйти из режима администратора.',
+                keyboard: getMainMenuKeyboard(true)
+            });
+        }
+
         setAdminStatusStmt.run(0, userId);
         setAwaitingPinStmt.run(0, userId);
 
@@ -232,7 +241,7 @@ vk.updates.on('message_new', async (context) => {
     }
 
     // 4. КОМАНДЫ АДМИНИСТРАТОРА
-    if (command === 'апанель' || command === '👑 панель администратора') {
+    if (command === 'апанель' || command === '👑 панель' || command === 'панель') {
         if (!isAdmin) {
             return context.send({
                 message: '❌ У вас нет прав доступа.',
@@ -243,8 +252,8 @@ vk.updates.on('message_new', async (context) => {
         return context.send({
             message: `👑 Панель Администратора\n\n` +
                      `• Астата — статистика пользователей\n` +
-                     `• Сказать [ID] [Текст] — сообщение пользователю\n` +
-                     `• Рассылка [Текст] — массовая рассылка\n` +
+                     `• Сказать [ID] [Текст] — отправить сообщение юзеру\n` +
+                     `• Рассылка [Текст] — сделать рассылку всем\n` +
                      `• Сервер — техническое состояние\n` +
                      `• Выход — выйти из админки`,
             keyboard: getMainMenuKeyboard(true)
