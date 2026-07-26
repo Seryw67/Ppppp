@@ -233,45 +233,47 @@ vk.updates.on('message_new', async (context) => {
         return;
     }
 
-    // 4. ОТПРАВКА СООБЩЕНИЯ ПОЛЬЗОВАТЕЛЮ (КОМАНДА "Отв [текст]" ЧЕРЕЗ REPLY ИЛИ ПО ID)
-    if (command === 'отв' || (isAdmin && context.hasReplyMessage)) {
-        if (!isAdmin) return;
-
+    // 4. ОБРАБОТКА ОТВЕТОВ ПОЛЬЗОВАТЕЛЮ (АВТООТВЕТЫ И КОМАНДА "ОТВ")
+    if (isAdmin && (command === '+' || command === '-' || command === 'отв')) {
         let targetId = null;
         let messageText = '';
 
-        // Вариант 1: Через Reply (цитирование)
+        // Определяем получателя
         if (context.hasReplyMessage) {
             targetId = context.replyMessage.senderId;
-
-            if (command === 'отв') {
-                messageText = args.slice(1).join(' ');
-            } else {
-                messageText = rawText;
-            }
-        } 
-        // Вариант 2: "отв [ID] [Текст]" (без reply)
-        else if (command === 'отв') {
+        } else if (command === 'отв') {
             targetId = parseInt(args[1], 10);
-            messageText = args.slice(2).join(' ');
         }
 
         if (!targetId || targetId < 0) {
             return context.send('⚠️ Не удалось определить ID получателя.');
         }
 
+        // Шаблон 1: Принятие заказа на символ "+"
+        if (command === '+') {
+            messageText = '✨ Ваш заказ принят! Вступите в чат https://vk.me/join//v/d04bOI6dq978Y5ufV/6wY3eQ7WD3C_ec=';
+        }
+        // Шаблон 2: Отмена заказа на символ "-"
+        else if (command === '-') {
+            messageText = '❌ К сожалению, ваш заказ был отменен администратором. Если у вас есть вопросы — напишите в ответ.';
+        }
+        // Шаблон 3: Кастомный текст через "отв [текст]"
+        else if (command === 'отв') {
+            messageText = context.hasReplyMessage ? args.slice(1).join(' ') : args.slice(2).join(' ');
+        }
+
         if (!messageText.trim()) {
-            return context.send('⚠️ Введите текст сообщения для отправки. Пример: `Отв Ваш заказ готовит администрация`');
+            return context.send('⚠️ Введите текст сообщения. Пример: `Отв Ваш заказ готовится`');
         }
 
         try {
             await vk.api.messages.send({
                 user_id: targetId,
-                message: `💬 Сообщение от администрации:\n\n${messageText}`,
+                message: messageText,
                 random_id: Math.floor(Math.random() * 1000000000)
             });
 
-            return context.send(`✅ Ответ успешно отправлен пользователю vk.com/id${targetId}`);
+            return context.send(`✅ Сообщение отправлено пользователю vk.com/id${targetId}`);
         } catch (error) {
             return context.send(`❌ Ошибка отправки: ${error.message}`);
         }
@@ -290,8 +292,10 @@ vk.updates.on('message_new', async (context) => {
         return context.send({
             message: `👑 Панель Администратора\n\n` +
                      `• Астата — статистика пользователей\n` +
-                     `• Отв [Текст] (в ответ на сообщение) — отправить сообщение пользователю\n` +
-                     `• Отв [ID] [Текст] — отправить сообщение по ID\n` +
+                     `• Отв на сообщение:\n` +
+                     `   [+] — отправить принятие и ссылку в чат\n` +
+                     `   [-] — отправить отмену заказа\n` +
+                     `   [Отв текст] — отправить свой текст\n` +
                      `• Рассылка [Текст] — сделать рассылку всем\n` +
                      `• Сервер — техническое состояние\n` +
                      `• Выход — выйти из админки`,
