@@ -31,6 +31,19 @@ db.exec(`
     )
 `);
 
+// Таблица заказов
+db.exec(`
+    CREATE TABLE IF NOT EXISTS orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        type TEXT,
+        amount INTEGER,
+        total_price INTEGER,
+        status TEXT DEFAULT 'В обработке',
+        created_at INTEGER
+    )
+`);
+
 // Таблица забаненных пользователей
 db.exec(`
     CREATE TABLE IF NOT EXISTS banned_users (
@@ -72,10 +85,16 @@ if (!getSettingStmt.get('bot_closed')) {
 const getUserStmt = db.prepare('SELECT * FROM users WHERE id = ?');
 const createUserStmt = db.prepare('INSERT INTO users (id, first_seen, is_admin) VALUES (?, ?, ?)');
 const getAllUsersStmt = db.prepare('SELECT id FROM users');
+const getAllAdminsStmt = db.prepare('SELECT id FROM users WHERE is_admin = 1 OR id = ?');
 const getUsersCountStmt = db.prepare('SELECT COUNT(*) as count FROM users');
 const setAdminStatusStmt = db.prepare('UPDATE users SET is_admin = ? WHERE id = ?');
 const setAwaitingPinStmt = db.prepare('UPDATE users SET awaiting_pin = ? WHERE id = ?');
 const setUserStepStmt = db.prepare('UPDATE users SET step = ? WHERE id = ?');
+
+// SQL для работы с заказами
+const createOrderStmt = db.prepare('INSERT INTO orders (user_id, type, amount, total_price, created_at) VALUES (?, ?, ?, ?, ?)');
+const updateOrderStatusStmt = db.prepare('UPDATE orders SET status = ? WHERE id = (SELECT id FROM orders WHERE user_id = ? ORDER BY id DESC LIMIT 1)');
+const getAllOrdersStmt = db.prepare('SELECT * FROM orders ORDER BY id DESC LIMIT 20');
 
 // SQL для бана и бана по IP
 const isBannedStmt = db.prepare('SELECT * FROM banned_users WHERE id = ?');
@@ -96,7 +115,25 @@ function registerUser(userId) {
     return user;
 }
 
-// Вспомогательная функция разбора длительности (10m, 2h, 1d, * и т.д.)
+// Функция отправки уведомления всем администраторам
+async function notifyAllAdmins(messageText) {
+    const admins = getAllAdminsStmt.all(OWNER_ID);
+    const uniqueAdminIds = [...new Set(admins.map(a => a.id))];
+
+    for (const adminId of uniqueAdminIds) {
+        try {
+            await vk.api.messages.send({
+                user_id: adminId,
+                message: messageText,
+                random_id: Math.floor(Math.random() * 1000000000)
+            });
+        } catch (error) {
+            console.error(`Ошибка отправки админу ${adminId}:`, error.message);
+        }
+    }
+}
+
+// Вспомогательная функция разбора длительности
 function parseDuration(timeStr) {
     if (!timeStr || timeStr === '*') return { seconds: 0, isForever: true };
 
@@ -270,7 +307,7 @@ vk.updates.on('message_new', async (context) => {
         });
     }
 
-    // 1. ВВОД ПИН-КОДА (Проверка по массиву ADMIN_PINS)
+    // 1. ВВОД ПИН-КОДА
     if (user.awaiting_pin === 1) {
         if (ADMIN_PINS.includes(text)) {
             setAdminStatusStmt.run(1, userId);
@@ -342,6 +379,9 @@ vk.updates.on('message_new', async (context) => {
 
         const totalPrice = amount * TEA_PRICE;
 
+        // Сохраняем заказ в БД
+        createOrderStmt.run(userId, 'Чай', amount, totalPrice, Math.floor(Date.now() / 1000));
+
         await context.send(`🍵 Заказ чая: ${amount} шт.`);
 
         await context.send({
@@ -357,20 +397,18 @@ vk.updates.on('message_new', async (context) => {
             const userName = `${userInfo.first_name} ${userInfo.last_name}`;
             const userDomain = userInfo.domain ? `@${userInfo.domain}` : `id${userId}`;
 
-            await vk.api.messages.send({
-                user_id: OWNER_ID,
-                message: `🛒 Новый заказ на покупку чая!\n\n` +
-                         `👤 Клиент: ${userName} (${userDomain})\n` +
-                         `🆔 ID: ${userId}\n` +
-                         `📦 Количество: ${amount} шт.\n` +
-                         `💰 Итоговая стоимость: ${totalPrice} руб.\n\n` +
-                         `💡 Ответить:\n` +
-                         `• + ${userDomain} или - ${userDomain}\n` +
-                         `• отв ${userDomain} [текст]`,
-                random_id: Math.floor(Math.random() * 1000000)
-            });
+            const adminMessage = `🛒 Новый заказ на покупку чая!\n\n` +
+                                 `👤 Клиент: ${userName} (${userDomain})\n` +
+                                 `🆔 ID: ${userId}\n` +
+                                 `📦 Количество: ${amount} шт.\n` +
+                                 `💰 Итоговая стоимость: ${totalPrice} руб.\n\n` +
+                                 `💡 Ответить:\n` +
+                                 `• + ${userDomain} или - ${userDomain}\n` +
+                                 `• отв ${userDomain} [текст]`;
+
+            await notifyAllAdmins(adminMessage);
         } catch (error) {
-            console.error('Ошибка отправки уведомления админу:', error);
+            console.error('Ошибка отправки уведомления админам:', error);
         }
         return;
     }
@@ -385,6 +423,9 @@ vk.updates.on('message_new', async (context) => {
         setUserStepStmt.run('', userId);
 
         const totalPrice = days * SUB_PRICE_PER_DAY;
+
+        // Сохраняем заказ в БД
+        createOrderStmt.run(userId, 'Подписка', days, totalPrice, Math.floor(Date.now() / 1000));
 
         await context.send(`⭐ Заказ подписки: ${days} дн.`);
 
@@ -401,23 +442,21 @@ vk.updates.on('message_new', async (context) => {
             const userName = `${userInfo.first_name} ${userInfo.last_name}`;
             const userDomain = userInfo.domain ? `@${userInfo.domain}` : `id${userId}`;
 
-            await vk.api.messages.send({
-                user_id: OWNER_ID,
-                message: `⭐ Заявка на подписку!\n\n` +
-                         `👤 Клиент: ${userName} (${userDomain})\n` +
-                         `🆔 ID: ${userId}\n` +
-                         `⏱ Срок: ${days} дн.\n` +
-                         `💰 Сумма: ${totalPrice} руб.\n\n` +
-                         `💡 Ответить: + ${userDomain} / - ${userDomain} / отв ${userDomain} [текст]`,
-                random_id: Math.floor(Math.random() * 1000000)
-            });
+            const adminMessage = `⭐ Заявка на подписку!\n\n` +
+                                 `👤 Клиент: ${userName} (${userDomain})\n` +
+                                 `🆔 ID: ${userId}\n` +
+                                 `⏱ Срок: ${days} дн.\n` +
+                                 `💰 Сумма: ${totalPrice} руб.\n\n` +
+                                 `💡 Ответить: + ${userDomain} / - ${userDomain} / отв ${userDomain} [текст]`;
+
+            await notifyAllAdmins(adminMessage);
         } catch (error) {
-            console.error('Ошибка отправки уведомления админу:', error);
+            console.error('Ошибка отправки уведомления админам:', error);
         }
         return;
     }
 
-    // 4. ОБРАБОТКА ОТВЕТОВ ПОЛЬЗОВАТЕЛЮ (+, -, отв)
+    // 4. ОБРАБОТКА ОТВЕТОВ ПОЛЬЗОВАТЕЛЮ (+, -, отв) И ОБНОВЛЕНИЕ СТАТУСА ЗАКАЗА
     if (isAdmin && (command === '+' || command === '-' || command === 'отв')) {
         let targetId = null;
         let messageText = '';
@@ -430,8 +469,10 @@ vk.updates.on('message_new', async (context) => {
 
             if (command === '+') {
                 messageText = ACCEPT_MSG;
+                updateOrderStatusStmt.run('Принят', targetId);
             } else if (command === '-') {
                 messageText = REJECT_MSG;
+                updateOrderStatusStmt.run('Отклонен', targetId);
             } else if (command === 'отв') {
                 messageText = args.slice(1).join(' ');
             }
@@ -446,8 +487,10 @@ vk.updates.on('message_new', async (context) => {
 
             if (command === '+') {
                 messageText = ACCEPT_MSG;
+                updateOrderStatusStmt.run('Принят', targetId);
             } else if (command === '-') {
                 messageText = REJECT_MSG;
+                updateOrderStatusStmt.run('Отклонен', targetId);
             } else if (command === 'отв') {
                 messageText = args.slice(2).join(' ');
             }
@@ -475,6 +518,30 @@ vk.updates.on('message_new', async (context) => {
     }
 
     // 5. КОМАНДЫ АДМИНИСТРАТОРА
+
+    // Вывод таблицы заказов
+    if (isAdmin && (command === 'заказы' || command === 'orders')) {
+        const orders = getAllOrdersStmt.all();
+
+        if (orders.length === 0) {
+            return context.send('📦 Заказов пока нет.');
+        }
+
+        let tableText = '📋 Список последних заказов:\n\n';
+        tableText += 'ID | Пользователь | Тип | Кол-во | Сумма | Вердикт\n';
+        tableText += '--------------------------------------------------\n';
+
+        orders.forEach(o => {
+            let statusEmoji = '⏳';
+            if (o.status === 'Принят') statusEmoji = '✅';
+            if (o.status === 'Отклонен') statusEmoji = '❌';
+
+            const unit = o.type === 'Чай' ? 'шт.' : 'дн.';
+            tableText += `#${o.id} | id${o.user_id} | ${o.type} | ${o.amount} ${unit} | ${o.total_price}р | ${statusEmoji} ${o.status}\n`;
+        });
+
+        return context.send(tableText);
+    }
 
     if (isAdmin && (command === 'cl' || command === 'клир')) {
         const currentlyClosed = getSettingStmt.get('bot_closed')?.value === '1';
@@ -607,6 +674,7 @@ vk.updates.on('message_new', async (context) => {
             message: `👑 Панель Администратора\n\n` +
                      `• Статус бота: ${isClosedNow ? '🛠 На тех. работах' : '✅ Работает'}\n` +
                      `• cl — закрыть/открыть бота\n` +
+                     `• Заказы — таблица всех заказов и их вердиктов\n` +
                      `• Бан [юзер/reply] [время/*] [причина] — забанить\n` +
                      `• Бан ип [юзер/reply] [время/*] [причина] — забанить по IP\n` +
                      `• Разбан [юзер/reply] — разбанить\n` +
