@@ -18,6 +18,8 @@ const vk = new VK({ token: VK_TOKEN });
 
 // Инициализация базы данных SQLite
 const db = new Database('database.db');
+
+// Таблица пользователей
 db.exec(`
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY,
@@ -28,6 +30,31 @@ db.exec(`
     )
 `);
 
+// Таблица забаненных
+db.exec(`
+    CREATE TABLE IF NOT EXISTS banned_users (
+        id INTEGER PRIMARY KEY,
+        reason TEXT DEFAULT '',
+        banned_at INTEGER
+    )
+`);
+
+// Таблица настроек бота (для хранения состояния тех. работ)
+db.exec(`
+    CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )
+`);
+
+// Инициализируем статус тех. работ, если его нет
+const getSettingStmt = db.prepare('SELECT value FROM settings WHERE key = ?');
+const setSettingStmt = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
+
+if (!getSettingStmt.get('bot_closed')) {
+    setSettingStmt.run('bot_closed', '0');
+}
+
 // SQL Запросы
 const getUserStmt = db.prepare('SELECT * FROM users WHERE id = ?');
 const createUserStmt = db.prepare('INSERT INTO users (id, first_seen, is_admin) VALUES (?, ?, ?)');
@@ -36,6 +63,11 @@ const getUsersCountStmt = db.prepare('SELECT COUNT(*) as count FROM users');
 const setAdminStatusStmt = db.prepare('UPDATE users SET is_admin = ? WHERE id = ?');
 const setAwaitingPinStmt = db.prepare('UPDATE users SET awaiting_pin = ? WHERE id = ?');
 const setUserStepStmt = db.prepare('UPDATE users SET step = ? WHERE id = ?');
+
+// SQL для бана/тех. работ
+const isBannedStmt = db.prepare('SELECT * FROM banned_users WHERE id = ?');
+const banUserStmt = db.prepare('INSERT INTO banned_users (id, reason, banned_at) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET reason = excluded.reason');
+const unbanUserStmt = db.prepare('DELETE FROM banned_users WHERE id = ?');
 
 function registerUser(userId) {
     let user = getUserStmt.get(userId);
@@ -126,7 +158,21 @@ vk.updates.on('message_new', async (context) => {
     const userId = context.senderId;
     if (!userId || userId < 0) return;
 
+    // 1. ПРОВЕРКА НА БАН
+    const banRecord = isBannedStmt.get(userId);
+    if (banRecord) {
+        // Забаненным пользователям ничего не отвечаем
+        return;
+    }
+
     const user = registerUser(userId);
+    const isAdmin = (userId === OWNER_ID || user.is_admin === 1);
+
+    // 2. ПРОВЕРКА НА ТЕХНИЧЕСКИЕ РАБОТЫ (cl)
+    const isClosed = getSettingStmt.get('bot_closed')?.value === '1';
+    if (isClosed && !isAdmin) {
+        return context.send('🛠 В данный момент бот находится на техническом обслуживании. Пожалуйста, попробуйте позже!');
+    }
 
     let rawText = context.text || '';
     if (context.messagePayload && context.messagePayload.command) {
@@ -138,8 +184,6 @@ vk.updates.on('message_new', async (context) => {
     const text = rawText.trim();
     const args = text.split(/\s+/);
     const command = args[0] ? args[0].toLowerCase() : '';
-
-    const isAdmin = (userId === OWNER_ID || user.is_admin === 1);
 
     // Старт / Помощь
     if (command === 'начать' || command === 'start' || command === '/start' || command === 'помощь') {
@@ -226,13 +270,15 @@ vk.updates.on('message_new', async (context) => {
 
         setUserStepStmt.run('', userId);
 
+        // Отправляем дублирующее сообщение-подтверждение от лица пользователя в чат
+        await context.send(`🍵 Заказ чая: ${amount} шт.`);
+
         await context.send({
             message: `Отлично! Вы заказали ${amount} пакет(-ов, -иков) чая! На данный момент 1 пакетик стоит ${TEA_PRICE} руб. Сумма и вердикт будут вынесены позже.`,
             keyboard: getMainMenuKeyboard(isAdmin)
         });
 
         try {
-            // Получаем информацию о пользователе (имя + domain/юзернейм)
             const [userInfo] = await vk.api.users.get({ user_ids: userId, fields: ['domain'] });
             const userName = `${userInfo.first_name} ${userInfo.last_name}`;
             const userDomain = userInfo.domain ? `@${userInfo.domain}` : `id${userId}`;
@@ -261,6 +307,8 @@ vk.updates.on('message_new', async (context) => {
         }
 
         setUserStepStmt.run('', userId);
+
+        await context.send(`⭐ Заказ подписки: ${days} дн.`);
 
         await context.send({
             message: `Заявка на подписку на ${days} дн. принята!`,
@@ -292,7 +340,6 @@ vk.updates.on('message_new', async (context) => {
         let targetId = null;
         let messageText = '';
 
-        // Вариант 1: Через ответ на сообщение (Reply)
         if (context.hasReplyMessage) {
             targetId = context.replyMessage.senderId;
 
@@ -303,9 +350,7 @@ vk.updates.on('message_new', async (context) => {
             } else if (command === 'отв') {
                 messageText = args.slice(1).join(' ');
             }
-        } 
-        // Вариант 2: Без ответа на сообщение (указываем юзернейм или ID в команде)
-        else {
+        } else {
             if (command === 'отв') {
                 const targetInput = args[1];
                 targetId = await resolveTargetId(targetInput);
@@ -338,6 +383,63 @@ vk.updates.on('message_new', async (context) => {
 
     // 5. КОМАНДЫ АДМИНИСТРАТОРА
 
+    // Закрытие/открытие бота на тех. работы (cl)
+    if (isAdmin && (command === 'cl' || command === 'клир')) {
+        const currentlyClosed = getSettingStmt.get('bot_closed')?.value === '1';
+        const newState = currentlyClosed ? '0' : '1';
+        setSettingStmt.run('bot_closed', newState);
+
+        if (newState === '1') {
+            return context.send('🛠 Бот **ЗАКРЫТ** на техническое обслуживание. Обычные пользователи не смогут им пользоваться.');
+        } else {
+            return context.send('✅ Бот **ОТКРЫТ** для пользователей.');
+        }
+    }
+
+    // Бан пользователя (бан по reply или по юзернейму/ID)
+    if (isAdmin && (command === 'бан' || command === 'ban')) {
+        let targetId = null;
+        let reason = '';
+
+        if (context.hasReplyMessage) {
+            targetId = context.replyMessage.senderId;
+            reason = args.slice(1).join(' ');
+        } else {
+            const targetInput = args[1];
+            targetId = await resolveTargetId(targetInput);
+            reason = args.slice(2).join(' ');
+        }
+
+        if (!targetId || targetId < 0) {
+            return context.send('⚠️ Укажите пользователя для бана через reply или команду:\n`бан @durov [причина]`');
+        }
+
+        if (targetId === OWNER_ID) {
+            return context.send('❌ Нельзя забанить владельца бота.');
+        }
+
+        banUserStmt.run(targetId, reason || 'Без причины', Math.floor(Date.now() / 1000));
+        return context.send(`⛔ Пользователь vk.com/id${targetId} забанен.`);
+    }
+
+    // Разбан пользователя
+    if (isAdmin && (command === 'разбан' || command === 'unban')) {
+        let targetId = null;
+
+        if (context.hasReplyMessage) {
+            targetId = context.replyMessage.senderId;
+        } else {
+            targetId = await resolveTargetId(args[1]);
+        }
+
+        if (!targetId || targetId < 0) {
+            return context.send('⚠️ Укажите пользователя для разбана через reply или команду:\n`разбан @durov`');
+        }
+
+        unbanUserStmt.run(targetId);
+        return context.send(`✅ Пользователь vk.com/id${targetId} разбанен.`);
+    }
+
     if (command === 'апанель' || command === '👑 панель' || command === 'панель') {
         if (!isAdmin) {
             return context.send({
@@ -346,16 +448,22 @@ vk.updates.on('message_new', async (context) => {
             });
         }
 
+        const isClosedNow = getSettingStmt.get('bot_closed')?.value === '1';
+
         return context.send({
             message: `👑 Панель Администратора\n\n` +
-                     `• Астата — статистика пользователей\n` +
-                     `• Ответ на сообщение:\n` +
+                     `• Статус бота: ${isClosedNow ? '🛠 На тех. работах' : '✅ Работает'}\n` +
+                     `• **cl** — переключить тех. работы (закрыть/открыть бота)\n` +
+                     `• **Бан [юзер/reply] [причина]** — забанить пользователя\n` +
+                     `• **Разбан [юзер/reply]** — разбанить пользователя\n` +
+                     `• **Астата** — статистика пользователей\n` +
+                     `• Ответы клиенту:\n` +
                      `   [+] (в ответ) — принять заказ\n` +
                      `   [-] (в ответ) — отменить заказ\n` +
-                     `   [Отв юзернейм/ID текст] — отправить текст по юзеру\n` +
-                     `• Рассылка [Текст] — сделать рассылку всем\n` +
-                     `• Сервер — техническое состояние\n` +
-                     `• Выход — выйти из админки`,
+                     `   [Отв юзернейм/ID текст] — отправить текст\n` +
+                     `• **Рассылка [Текст]** — рассылка всем\n` +
+                     `• **Сервер** — техническое состояние\n` +
+                     `• **Выход** — выйти из админки`,
             keyboard: getMainMenuKeyboard(true)
         });
     }
