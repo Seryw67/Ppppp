@@ -160,10 +160,7 @@ vk.updates.on('message_new', async (context) => {
 
     // 1. ПРОВЕРКА НА БАН
     const banRecord = isBannedStmt.get(userId);
-    if (banRecord) {
-        // Забаненным пользователям ничего не отвечаем
-        return;
-    }
+    if (banRecord) return;
 
     const user = registerUser(userId);
     const isAdmin = (userId === OWNER_ID || user.is_admin === 1);
@@ -270,7 +267,6 @@ vk.updates.on('message_new', async (context) => {
 
         setUserStepStmt.run('', userId);
 
-        // Отправляем дублирующее сообщение-подтверждение от лица пользователя в чат
         await context.send(`🍵 Заказ чая: ${amount} шт.`);
 
         await context.send({
@@ -290,8 +286,10 @@ vk.updates.on('message_new', async (context) => {
                          `🆔 ID: ${userId}\n` +
                          `📦 Количество: ${amount} шт.\n` +
                          `💰 Предварительная стоимость: ${amount * TEA_PRICE} руб.\n\n` +
-                         `💡 Ответить можно с реплаем (+ / -) или командой:\n` +
-                         `отв ${userDomain} [текст]`,
+                         `💡 Варианты ответа:\n` +
+                         `• Нажать reply + / -\n` +
+                         `• + ${userDomain} или - ${userDomain}\n` +
+                         `• отв ${userDomain} [текст]`,
                 random_id: Math.floor(Math.random() * 1000000)
             });
         } catch (error) {
@@ -326,7 +324,7 @@ vk.updates.on('message_new', async (context) => {
                          `👤 Клиент: ${userName} (${userDomain})\n` +
                          `🆔 ID: ${userId}\n` +
                          `⏱ Срок: ${days} дн.\n\n` +
-                         `💡 Ответить: отв ${userDomain} [текст]`,
+                         `💡 Ответить: + ${userDomain} / - ${userDomain} / отв ${userDomain} [текст]`,
                 random_id: Math.floor(Math.random() * 1000000)
             });
         } catch (error) {
@@ -335,28 +333,42 @@ vk.updates.on('message_new', async (context) => {
         return;
     }
 
-    // 4. ОБРАБОТКА ОТВЕТОВ ПОЛЬЗОВАТЕЛЮ (АВТООТВЕТЫ И КОМАНДА "ОТВ")
+    // 4. ОБРАБОТКА ОТВЕТОВ ПОЛЬЗОВАТЕЛЮ (+, -, отв)
     if (isAdmin && (command === '+' || command === '-' || command === 'отв')) {
         let targetId = null;
         let messageText = '';
 
+        const ACCEPT_MSG = '✨ Ваш заказ принят! Вступите в чат https://vk.me/join//v/d04bOI6dq978Y5ufV/6wY3eQ7WD3C_ec=';
+        const REJECT_MSG = '❌ К сожалению, ваш заказ был отменен администратором. Если у вас есть вопросы — напишите в ответ.';
+
+        // Вариант 1: Через ответ на сообщение (Reply)
         if (context.hasReplyMessage) {
             targetId = context.replyMessage.senderId;
 
             if (command === '+') {
-                messageText = '✨ Ваш заказ принят! Вступите в чат https://vk.me/join//v/d04bOI6dq978Y5ufV/6wY3eQ7WD3C_ec=';
+                messageText = ACCEPT_MSG;
             } else if (command === '-') {
-                messageText = '❌ К сожалению, ваш заказ был отменен администратором. Если у вас есть вопросы — напишите в ответ.';
+                messageText = REJECT_MSG;
             } else if (command === 'отв') {
                 messageText = args.slice(1).join(' ');
             }
-        } else {
-            if (command === 'отв') {
-                const targetInput = args[1];
-                targetId = await resolveTargetId(targetInput);
+        } 
+        // Вариант 2: По указанному юзеру (+ @durov, - durov, отв durov текст)
+        else {
+            const targetInput = args[1];
+
+            if (!targetInput) {
+                return context.send('⚠️ Укажите юзернейм или ID. Пример:\n`+ @durov`\n`- @durov`\n`отв @durov Ваш текст`');
+            }
+
+            targetId = await resolveTargetId(targetInput);
+
+            if (command === '+') {
+                messageText = ACCEPT_MSG;
+            } else if (command === '-') {
+                messageText = REJECT_MSG;
+            } else if (command === 'отв') {
                 messageText = args.slice(2).join(' ');
-            } else {
-                return context.send('⚠️ Чтобы использовать "+" или "-", сделайте ответ (reply) на сообщение заказа.');
             }
         }
 
@@ -365,7 +377,7 @@ vk.updates.on('message_new', async (context) => {
         }
 
         if (!messageText.trim()) {
-            return context.send('⚠️ Введите текст сообщения. Пример:\n`Отв @durov Ваш заказ готов`');
+            return context.send('⚠️ Введите текст сообщения. Пример:\n`отв @durov Ваш заказ готов`');
         }
 
         try {
@@ -375,7 +387,7 @@ vk.updates.on('message_new', async (context) => {
                 random_id: Math.floor(Math.random() * 1000000000)
             });
 
-            return context.send(`✅ Сообщение отправлено пользователю vk.com/id${targetId}`);
+            return context.send(`✅ Ответ отправлен пользователю vk.com/id${targetId}`);
         } catch (error) {
             return context.send(`❌ Ошибка отправки: ${error.message}`);
         }
@@ -396,7 +408,7 @@ vk.updates.on('message_new', async (context) => {
         }
     }
 
-    // Бан пользователя (бан по reply или по юзернейму/ID)
+    // Бан пользователя
     if (isAdmin && (command === 'бан' || command === 'ban')) {
         let targetId = null;
         let reason = '';
@@ -453,14 +465,14 @@ vk.updates.on('message_new', async (context) => {
         return context.send({
             message: `👑 Панель Администратора\n\n` +
                      `• Статус бота: ${isClosedNow ? '🛠 На тех. работах' : '✅ Работает'}\n` +
-                     `• **cl** — переключить тех. работы (закрыть/открыть бота)\n` +
-                     `• **Бан [юзер/reply] [причина]** — забанить пользователя\n` +
-                     `• **Разбан [юзер/reply]** — разбанить пользователя\n` +
+                     `• **cl** — закрыть/открыть бота\n` +
+                     `• **Бан [юзер/reply] [причина]** — забанить\n` +
+                     `• **Разбан [юзер/reply]** — разбанить\n` +
                      `• **Астата** — статистика пользователей\n` +
-                     `• Ответы клиенту:\n` +
-                     `   [+] (в ответ) — принять заказ\n` +
-                     `   [-] (в ответ) — отменить заказ\n` +
-                     `   [Отв юзернейм/ID текст] — отправить текст\n` +
+                     `• Принять/отклонить заказ:\n` +
+                     `   ` + "`+`" + ` или ` + "`+ @durov`" + ` — принять заказ\n` +
+                     `   ` + "`-`" + ` или ` + "`- @durov`" + ` — отменить заказ\n` +
+                     `   ` + "`отв @durov [текст]`" + ` — произвольный текст\n` +
                      `• **Рассылка [Текст]** — рассылка всем\n` +
                      `• **Сервер** — техническое состояние\n` +
                      `• **Выход** — выйти из админки`,
