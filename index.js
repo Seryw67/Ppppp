@@ -6,8 +6,7 @@ const Database = require('better-sqlite3');
 // ----------------------------------------------------
 const VK_TOKEN = process.env.VK_TOKEN;
 const OWNER_ID = 1021072434; // Твой VK ID
-const ADMIN_PIN = '5480';
-const ADMIN_PIN = '1746'; // ПИН для входа
+const ADMIN_PINS = ['5480', '1746']; // ПИН-коды для входа с админ-правами
 const TEA_PRICE = 1400;       // Цена за 1 пакетик чая
 const SUB_PRICE_PER_DAY = 100; // Цена подписки за 1 день
 
@@ -32,7 +31,7 @@ db.exec(`
     )
 `);
 
-// Таблица забаненных пользователей (добавлено поле unban_at)
+// Таблица забаненных пользователей
 db.exec(`
     CREATE TABLE IF NOT EXISTS banned_users (
         id INTEGER PRIMARY KEY,
@@ -42,7 +41,7 @@ db.exec(`
     )
 `);
 
-// Таблица забаненных IP / Жесткого бана (добавлено поле unban_at)
+// Таблица забаненных IP / Жесткого бана
 db.exec(`
     CREATE TABLE IF NOT EXISTS banned_ips (
         user_id INTEGER PRIMARY KEY,
@@ -115,14 +114,13 @@ function parseDuration(timeStr) {
     } else if (unit === 'd' || unit === 'д') {
         seconds = val * 86400;
     } else {
-        // Если просто число без букв — считаем в минутах
         seconds = val * 60;
     }
 
     return { seconds, isForever: false };
 }
 
-// Форматирование секунды/времени для вывода админу
+// Форматирование времени для вывода
 function formatDurationText(unbanAt) {
     if (unbanAt === 0) return 'навсегда';
     const diff = unbanAt - Math.floor(Date.now() / 1000);
@@ -136,7 +134,7 @@ function formatDurationText(unbanAt) {
     return `на ${days} дн.`;
 }
 
-// Функция определения targetId по тексту (число, @mention или screen_name/ссылка)
+// Функция определения targetId по тексту
 async function resolveTargetId(input) {
     if (!input) return null;
 
@@ -220,19 +218,16 @@ vk.updates.on('message_new', async (context) => {
     if (banRecord || ipBanRecord) {
         let isExpired = false;
 
-        // Проверяем срок обычного бана
         if (banRecord && banRecord.unban_at > 0 && now >= banRecord.unban_at) {
             unbanUserStmt.run(userId);
             isExpired = true;
         }
 
-        // Проверяем срок IP бана
         if (ipBanRecord && ipBanRecord.unban_at > 0 && now >= ipBanRecord.unban_at) {
             unbanIpStmt.run(userId);
             isExpired = true;
         }
 
-        // Если бан не истек — игнорируем пользователя
         if (!isExpired && ((banRecord && (banRecord.unban_at === 0 || now < banRecord.unban_at)) || 
                            (ipBanRecord && (ipBanRecord.unban_at === 0 || now < ipBanRecord.unban_at)))) {
             return;
@@ -275,9 +270,9 @@ vk.updates.on('message_new', async (context) => {
         });
     }
 
-    // 1. ВВОД ПИН-КОДА
+    // 1. ВВОД ПИН-КОДА (Проверка по массиву ADMIN_PINS)
     if (user.awaiting_pin === 1) {
-        if (text === ADMIN_PIN) {
+        if (ADMIN_PINS.includes(text)) {
             setAdminStatusStmt.run(1, userId);
             setAwaitingPinStmt.run(0, userId);
 
@@ -493,9 +488,9 @@ vk.updates.on('message_new', async (context) => {
         }
     }
 
-    // ОБЫЧНЫЙ БАН (с поддержкой времени или * навсегда)
+    // ОБЫЧНЫЙ БАН
     if (isAdmin && (command === 'бан' || command === 'ban')) {
-        if (args[1] === 'ип' || args[1] === 'ip') return; // Игнорируем, если это "бан ип"
+        if (args[1] === 'ип' || args[1] === 'ip') return;
 
         let targetId = null;
         let timeArg = null;
@@ -513,7 +508,7 @@ vk.updates.on('message_new', async (context) => {
         }
 
         if (!targetId || targetId < 0) {
-            return context.send('⚠️ Укажите пользователя для бана:\nбан @durov [время/*] [причина]\nПримеры:\nбан @durov 30m спам\nбан @durov * нарушитель');
+            return context.send('⚠️ Укажите пользователя для бана:\nбан @durov [время/*] [причина]');
         }
 
         if (targetId === OWNER_ID) {
@@ -526,7 +521,6 @@ vk.updates.on('message_new', async (context) => {
         if (duration && !duration.isForever) {
             unbanAt = Math.floor(Date.now() / 1000) + duration.seconds;
         } else if (!duration && timeArg) {
-            // Если время не совпало со структурой, значит это уже текст причины
             reason = [timeArg, reason].join(' ').trim();
         }
 
@@ -534,7 +528,7 @@ vk.updates.on('message_new', async (context) => {
         return context.send(`⛔ Пользователь vk.com/id${targetId} забанен ${formatDurationText(unbanAt)}.`);
     }
 
-    // БАН ПО IP (с поддержкой времени или * навсегда)
+    // БАН ПО IP
     if (isAdmin && ((command === 'бан' && (args[1] === 'ип' || args[1] === 'ip')) || command === 'banip')) {
         let targetId = null;
         let timeArg = null;
@@ -554,7 +548,7 @@ vk.updates.on('message_new', async (context) => {
         }
 
         if (!targetId || targetId < 0) {
-            return context.send('⚠️ Укажите пользователя для IP бана:\nбан ип @durov [время/*] [причина]\nПримеры:\nбан ип @durov 1d мультиаккаунт\nбан ип @durov * вредитель');
+            return context.send('⚠️ Укажите пользователя для IP бана:\nбан ип @durov [время/*] [причина]');
         }
 
         if (targetId === OWNER_ID) {
@@ -615,7 +609,6 @@ vk.updates.on('message_new', async (context) => {
                      `• cl — закрыть/открыть бота\n` +
                      `• Бан [юзер/reply] [время/*] [причина] — забанить\n` +
                      `• Бан ип [юзер/reply] [время/*] [причина] — забанить по IP\n` +
-                     `  (Форматы времени: 30м, 2ч, 1д, или * навсегда)\n` +
                      `• Разбан [юзер/reply] — разбанить\n` +
                      `• Астата — статистика пользователей\n` +
                      `• Принять/отклонить заказ:\n` +
