@@ -6,7 +6,7 @@ const Database = require('better-sqlite3');
 // ----------------------------------------------------
 const VK_TOKEN = process.env.VK_TOKEN;
 const OWNER_ID = 1021072434; // Твой VK ID
-const ADMIN_PINS = ['5480', '1746']; // ПИН-коды для входа с админ-правами
+const ADMIN_PINS = ['5480', '1746', '2808' ]; // ПИН-коды для входа с админ-правами
 const TEA_PRICE = 1400;       // Цена за 1 пакетик чая
 const SUB_PRICE_PER_DAY = 100; // Цена подписки за 1 день
 
