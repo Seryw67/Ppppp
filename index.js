@@ -135,4 +135,29 @@ vk.updates.on('message_new', async (context) => {
     }
 });
 
-vk.updates.start().then(() => console.log('Бот успешно запущен!'));
+vk.updates.start().then(() => console.log('ℹ️ Бот успешно запущен!'));
+const mainKeyboard = {
+    inline: false,
+    one_time: false,
+    buttons: [
+        [
+            { action: { type: 'text', label: 'Купить чай' }, color: 'positive' },
+            { action: { type: 'text', label: 'Купить подписку' }, color: 'primary' }
+        ],
+        [
+            { action: { type: 'text', label: 'Вход в id' }, color: 'secondary' },
+            { action: { type: 'text', label: 'Панель пользователя' }, color: 'secondary' }
+        ]
+    ]
+};
+
+// При первом сообщении от пользователя отправляем меню
+vk.updates.on('message_new', async (context) => {
+    // Если текст "Начало", "Привет" или пользователь впервые пишет
+    if (context.text && (context.text.toLowerCase() === 'начало' || context.text.toLowerCase() === 'привет')) {
+        return context.send({
+            message: '👋 Привет! Выберите нужный раздел:',
+            keyboard: JSON.stringify(mainKeyboard)
+        });
+    }
+});
