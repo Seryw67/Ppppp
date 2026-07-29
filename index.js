@@ -1,5 +1,5 @@
 const { VK } = require('vk-io');
-const vk = new VK({ token: 'ВАШ_ТОКЕН' });
+const vk = new VK({ token: 'vk1.a.Ga4K8x7g8Du2k-hhEGatU1k6S2ErOD7M7NSyjUCR2fiwanykPUMF_XUwJKpghWP8uN_yeQkNqyB56X-dO2fNfVxzQ21NDquZwmVPqn2WsGJ3Ikl5p-50MWGsRl-iCGtBgmhU3aBeW5rAuYOsxpAzLFDpS9K_qFUgoDndWkpw9WwczPW45mM33-lPQala85TOtoEY8AW6igjM-CMNt5heqA' });
 
 // ID чата админов или ID ВК админа, куда приходят заказы
 const ADMIN_CHAT_ID = 2000000001; 
